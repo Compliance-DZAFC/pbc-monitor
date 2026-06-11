@@ -34,7 +34,6 @@ def fetch_latest_penalty():
         )
 
         page = context.new_page()
-        # 注入反检测脚本
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             window.chrome = { runtime: {} };
@@ -42,7 +41,7 @@ def fetch_latest_penalty():
             Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
         """)
 
-        print(f"[1/3] 访问：{url}")
+        print("[1/3] 访问：" + url)
         page.goto(url, wait_until="networkidle", timeout=30000)
         page.wait_for_timeout(5000)
 
@@ -72,13 +71,13 @@ def fetch_latest_penalty():
         href = link.get_attribute("href")
 
         if href.startswith('/'):
-            href = f"https://www.pbc.gov.cn{href}"
+            href = "https://www.pbc.gov.cn" + href
         elif not href.startswith('http'):
             base = "https://www.pbc.gov.cn/zhengwugongkai/4081330/4081344/4081407/4081705/"
             href = base + href
 
-        print(f"[2/3] 找到：{title}")
-        print(f"       详情页：{href}")
+        print("[2/3] 找到：" + title)
+        print("       详情页：" + href)
 
         detail_page = context.new_page()
         detail_page.add_init_script("""
@@ -136,20 +135,24 @@ def extract_structured_data(page, raw_text):
         pass
 
     if not data['party_name']:
-        m = re.search(r'([^
-]{2,30}?(?:公司|银行|集团|中心|协会))', raw_text)
-        if m:
-            data['party_name'] = m.group(1).strip()
+        lines = raw_text.splitlines()
+        for line in lines:
+            line = line.strip()
+            if len(line) >= 2 and len(line) <= 30:
+                if any(k in line for k in ['公司', '银行', '集团', '中心', '协会']):
+                    data['party_name'] = line
+                    break
 
     if not data['doc_number']:
-        m = re.search(r'(银罚决字[〔\[]?\d{4}[〕\]]?\d+号)', raw_text)
+        # 不用原始字符串，避免反斜杠问题
+        m = re.search('银罚决字[〔]?\d{4}[〕]?\d+号', raw_text)
         if m:
-            data['doc_number'] = m.group(1)
+            data['doc_number'] = m.group(0)
 
     if not data['decision_date']:
-        m = re.search(r'(\d{4}年\d{1,2}月\d{1,2}日)', raw_text)
+        m = re.search('\d{4}年\d{1,2}月\d{1,2}日', raw_text)
         if m:
-            data['decision_date'] = m.group(1)
+            data['decision_date'] = m.group(0)
 
     return data
 
@@ -161,39 +164,31 @@ def analyze_with_kimi(data):
 
     client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL, timeout=60)
 
-    prompt = f"""你是一名专业的金融法律合规专家，精通汽车金融公司监管要求。
+    prompt = "你是一名专业的金融法律合规专家，精通汽车金融公司监管要求。\n\n"
+    prompt += "请基于以下中国人民银行行政处罚信息，输出两部分内容：\n\n"
+    prompt += "【处罚信息】\n"
+    prompt += "当事人：" + data.get('party_name', '未知') + "\n"
+    prompt += "文号：" + data.get('doc_number', '未知') + "\n"
+    prompt += "违法行为：" + data.get('violation_type', '未知') + "\n"
+    prompt += "处罚内容：" + data.get('penalty_content', '未知') + "\n"
+    prompt += "决定机关：" + data.get('authority', '中国人民银行') + "\n"
+    prompt += "决定日期：" + data.get('decision_date', '未知') + "\n\n"
+    prompt += "【要求】\n"
+    prompt += "1. 专业洞见（3-4条）：分析该处罚反映的监管趋势、法律风险点、对行业的警示意义。每条100字以内。\n"
+    prompt += "2. 汽车金融专项建议（4-5条）：从汽车金融公司展业特点（零售信贷、经销商网络、客户身份识别、资金清算、征信查询等）出发，给出具体可落地的合规建议。每条150字以内。\n\n"
+    prompt += "请用中文输出，格式如下：\n\n"
+    prompt += "洞见1|这里是洞见内容...\n"
+    prompt += "洞见2|...\n"
+    prompt += "洞见3|...\n\n"
+    prompt += "建议1|标题|内容...\n"
+    prompt += "建议2|标题|内容...\n"
 
-请基于以下中国人民银行行政处罚信息，输出两部分内容：
-
-【处罚信息】
-当事人：{data.get('party_name', '未知')}
-文号：{data.get('doc_number', '未知')}
-违法行为：{data.get('violation_type', '未知')}
-处罚内容：{data.get('penalty_content', '未知')}
-决定机关：{data.get('authority', '中国人民银行')}
-决定日期：{data.get('decision_date', '未知')}
-
-【要求】
-1. 专业洞见（3-4条）：分析该处罚反映的监管趋势、法律风险点、对行业的警示意义。每条100字以内。
-2. 汽车金融专项建议（4-5条）：从汽车金融公司展业特点（零售信贷、经销商网络、客户身份识别、资金清算、征信查询等）出发，给出具体可落地的合规建议。每条150字以内。
-
-请用中文输出，格式如下：
-
-洞见1|这里是洞见内容...
-洞见2|...
-洞见3|...
-
-建议1|标题|内容...
-建议2|标题|内容...
-"""
-
-    print("
-[AI分析] 调用 Kimi API...")
+    print("\n[AI分析] 调用 Kimi API...")
     max_retries = 3
 
     for attempt in range(1, max_retries + 1):
         try:
-            print(f"   尝试 {attempt}/{max_retries}...")
+            print("   尝试 " + str(attempt) + "/" + str(max_retries) + "...")
             resp = client.chat.completions.create(
                 model=KIMI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -203,7 +198,7 @@ def analyze_with_kimi(data):
             print("   成功")
             return parse_ai_response(resp.choices[0].message.content)
         except Exception as e:
-            print(f"   失败：{e}")
+            print("   失败：" + str(e))
             if attempt < max_retries:
                 time.sleep(3)
             else:
@@ -232,8 +227,7 @@ def get_default_data():
 def parse_ai_response(text):
     insights = []
     recommendations = []
-    for line in text.strip().split('
-'):
+    for line in text.strip().splitlines():
         line = line.strip()
         if line.startswith('洞见') and '|' in line:
             insights.append(line.split('|', 1)[1])
@@ -333,8 +327,7 @@ def generate_html(data, analysis):
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
 
-    print(f"
-已生成：{output_path}")
+    print("\n已生成：" + output_path)
 
 
 def main():
@@ -342,12 +335,10 @@ def main():
     print("央行行政处罚监测日报生成器")
     print("=" * 60)
 
-    print("
->>> 步骤1：爬取央行处罚公示页面")
+    print("\n>>> 步骤1：爬取央行处罚公示页面")
     data = fetch_latest_penalty()
     if not data:
-        print("
-爬取失败，生成默认页面")
+        print("\n爬取失败，生成默认页面")
         data = {
             'party_name': '—',
             'doc_number': '—',
@@ -360,21 +351,17 @@ def main():
             'source_url': ''
         }
 
-    print(f"
-抓取结果：")
-    print(f"   当事人：{data.get('party_name', '—')}")
-    print(f"   文号：{data.get('doc_number', '—')}")
+    print("\n抓取结果：")
+    print("   当事人：" + data.get('party_name', '—'))
+    print("   文号：" + data.get('doc_number', '—'))
 
-    print("
->>> 步骤2：Kimi AI 分析")
+    print("\n>>> 步骤2：Kimi AI 分析")
     analysis = analyze_with_kimi(data)
 
-    print("
->>> 步骤3：生成HTML报告")
+    print("\n>>> 步骤3：生成HTML报告")
     generate_html(data, analysis)
 
-    print("
-" + "=" * 60)
+    print("\n" + "=" * 60)
     print("完成！")
     print("=" * 60)
 
