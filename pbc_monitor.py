@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-央行行政处罚监测日报生成器 - GitHub Actions 版本
+央行行政处罚监测日报生成器 - 精准表格提取版
 """
 
 import os
-import re
 import sys
 import time
 from datetime import datetime
@@ -41,20 +40,13 @@ def fetch_latest_penalty():
             Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
         """)
 
-        print("[1/3] 访问：" + url)
+        print("[1/3] 访问列表页：" + url)
         page.goto(url, wait_until="networkidle", timeout=30000)
         page.wait_for_timeout(5000)
 
-        selectors = [
-            "a[href*='银罚决字']",
-            "a[title*='银罚决字']",
-            "ul li a",
-            ".TRS_Editor a",
-            "table a",
-        ]
-
+        # 找第一个含"银罚决字"的链接
         link = None
-        for sel in selectors:
+        for sel in ["a[href*='银罚决字']", "a[title*='银罚决字']", "ul li a", ".TRS_Editor a", "table a"]:
             try:
                 link = page.query_selector(sel)
                 if link and '银罚决字' in (link.inner_text() or ''):
@@ -89,18 +81,20 @@ def fetch_latest_penalty():
         detail_page.goto(href, wait_until="networkidle", timeout=30000)
         detail_page.wait_for_timeout(3000)
 
-        raw_text = detail_page.inner_text("body")
-        data = extract_structured_data(detail_page, raw_text)
-        data['raw_text'] = raw_text[:3000]
+        print("[3/3] 提取表格数据...")
+        data = extract_table_data(detail_page)
         data['source_url'] = href
         data['list_title'] = title
 
-        print("[3/3] 详情页完成")
         browser.close()
         return data
 
 
-def extract_structured_data(page, raw_text):
+def extract_table_data(page):
+    """
+    直接提取央行详情页标准化表格，按表头精确匹配。
+    表头：序号 | 当事人名称 | 行政处罚决定书文号 | 违法行为类型 | 行政处罚内容 | 作出行政处罚决定机关名称 | 作出行政处罚决定日期 | 公示期限 | 备注
+    """
     data = {
         'party_name': '',
         'doc_number': '',
@@ -108,51 +102,68 @@ def extract_structured_data(page, raw_text):
         'penalty_content': '',
         'authority': '',
         'decision_date': '',
-        'publicity_period': '五年',
+        'publicity_period': '',
         'remarks': ''
     }
 
+    # 表头到字段的映射
+    header_map = {
+        '当事人名称': 'party_name',
+        '行政处罚决定书文号': 'doc_number',
+        '违法行为类型': 'violation_type',
+        '行政处罚内容': 'penalty_content',
+        '作出行政处罚决定机关名称': 'authority',
+        '作出行政处罚决定日期': 'decision_date',
+        '公示期限': 'publicity_period',
+        '备注': 'remarks',
+    }
+
     try:
-        rows = page.query_selector_all("table tr")
-        for row in rows:
-            cells = row.query_selector_all("td, th")
-            if len(cells) >= 2:
-                label = cells[0].inner_text().strip()
-                value = cells[1].inner_text().strip()
-                if '当事人' in label or '被处罚' in label:
-                    data['party_name'] = value
-                elif '文号' in label:
-                    data['doc_number'] = value
-                elif '违法' in label or '违规' in label:
-                    data['violation_type'] = value
-                elif '处罚内容' in label:
-                    data['penalty_content'] = value
-                elif '机关' in label:
-                    data['authority'] = value
-                elif '日期' in label and '决定' in label:
-                    data['decision_date'] = value
-    except:
-        pass
+        # 先尝试找 thead + tbody 结构
+        tables = page.query_selector_all("table")
 
-    if not data['party_name']:
-        lines = raw_text.splitlines()
-        for line in lines:
-            line = line.strip()
-            if len(line) >= 2 and len(line) <= 30:
-                if any(k in line for k in ['公司', '银行', '集团', '中心', '协会']):
-                    data['party_name'] = line
-                    break
+        for table in tables:
+            # 获取所有行
+            rows = table.query_selector_all("tr")
+            if len(rows) < 2:
+                continue
 
-    if not data['doc_number']:
-        # 不用原始字符串，避免反斜杠问题
-        m = re.search('银罚决字[〔]?\d{4}[〕]?\d+号', raw_text)
-        if m:
-            data['doc_number'] = m.group(0)
+            # 第一行是表头
+            headers = []
+            header_cells = rows[0].query_selector_all("th, td")
+            for cell in header_cells:
+                text = cell.inner_text().strip().replace('\n', '').replace(' ', '')
+                headers.append(text)
 
-    if not data['decision_date']:
-        m = re.search('\d{4}年\d{1,2}月\d{1,2}日', raw_text)
-        if m:
-            data['decision_date'] = m.group(0)
+            # 检查是否匹配目标表格（必须有"当事人名称"）
+            if not any('当事人名称' in h for h in headers):
+                continue
+
+            print("   发现目标表格，表头：" + " | ".join(headers))
+
+            # 取第二行（数据行，跳过序号列）
+            if len(rows) >= 2:
+                data_cells = rows[1].query_selector_all("td")
+                # 如果第一列是序号，数据从第二列开始
+                start_idx = 1 if len(data_cells) > len(headers) else 0
+
+                for i, header in enumerate(headers):
+                    cell_idx = start_idx + i
+                    if cell_idx < len(data_cells):
+                        for key_word, field_name in header_map.items():
+                            if key_word in header:
+                                value = data_cells[cell_idx].inner_text().strip()
+                                data[field_name] = value
+                                break
+            break  # 只处理第一个匹配表格
+
+    except Exception as e:
+        print("表格提取异常：" + str(e))
+
+    # 打印提取结果供调试
+    print("   提取结果：")
+    for k, v in data.items():
+        print("      " + k + " = " + (v if v else "(空)"))
 
     return data
 
@@ -160,7 +171,7 @@ def extract_structured_data(page, raw_text):
 def analyze_with_kimi(data):
     if not KIMI_API_KEY:
         print("未设置 KIMI_API_KEY，使用默认数据")
-        return get_default_data()
+        return get_default_data(), False
 
     client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL, timeout=60)
 
@@ -172,7 +183,8 @@ def analyze_with_kimi(data):
     prompt += "违法行为：" + data.get('violation_type', '未知') + "\n"
     prompt += "处罚内容：" + data.get('penalty_content', '未知') + "\n"
     prompt += "决定机关：" + data.get('authority', '中国人民银行') + "\n"
-    prompt += "决定日期：" + data.get('decision_date', '未知') + "\n\n"
+    prompt += "决定日期：" + data.get('decision_date', '未知') + "\n"
+    prompt += "公示期限：" + data.get('publicity_period', '未知') + "\n\n"
     prompt += "【要求】\n"
     prompt += "1. 专业洞见（3-4条）：分析该处罚反映的监管趋势、法律风险点、对行业的警示意义。每条100字以内。\n"
     prompt += "2. 汽车金融专项建议（4-5条）：从汽车金融公司展业特点（零售信贷、经销商网络、客户身份识别、资金清算、征信查询等）出发，给出具体可落地的合规建议。每条150字以内。\n\n"
@@ -196,7 +208,7 @@ def analyze_with_kimi(data):
                 max_tokens=2000,
             )
             print("   成功")
-            return parse_ai_response(resp.choices[0].message.content)
+            return parse_ai_response(resp.choices[0].message.content), True
         except Exception as e:
             print("   失败：" + str(e))
             if attempt < max_retries:
@@ -205,7 +217,7 @@ def analyze_with_kimi(data):
                 print("   已用尽重试次数，使用默认数据")
                 break
 
-    return get_default_data()
+    return get_default_data(), False
 
 
 def get_default_data():
@@ -242,8 +254,13 @@ def parse_ai_response(text):
     return {'insights': insights, 'recommendations': recommendations}
 
 
-def generate_html(data, analysis):
+def generate_html(data, analysis, is_ai_generated):
     output_path = "index.html"
+
+    if is_ai_generated:
+        source_tag = '<span style="color:#38a169;font-size:12px;">● 本分析由 Kimi AI 实时生成</span>'
+    else:
+        source_tag = '<span style="color:#dd6b20;font-size:12px;">● 本分析为默认模板（Kimi API 调用失败时降级）</span>'
 
     template = Template("""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -273,6 +290,7 @@ def generate_html(data, analysis):
         .rec-box p { font-size: 13px; color: #666; line-height: 1.5; }
         .footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #999; text-align: center; }
         .badge { display: inline-block; background: #1a3a5c; color: #fff; padding: 2px 10px; border-radius: 12px; font-size: 12px; margin-left: 8px; }
+        .source-tag { margin-top: 8px; display: block; }
     </style>
 </head>
 <body>
@@ -299,10 +317,12 @@ def generate_html(data, analysis):
         <div class="section">
             <div class="section-title">二、专业洞见</div>
             {% for insight in insights %}<div class="insight-box"><ul><li>{{insight}}</li></ul></div>{% endfor %}
+            <div class="source-tag">{{source_tag}}</div>
         </div>
         <div class="section">
             <div class="section-title">三、汽车金融专项建议</div>
             {% for title, content in recommendations %}<div class="rec-box"><h4>{{title}}</h4><p>{{content}}</p></div>{% endfor %}
+            <div class="source-tag">{{source_tag}}</div>
         </div>
         <div class="footer">央行行政处罚监测日报 · {{report_date}} · 仅供内部合规参考</div>
     </div>
@@ -317,11 +337,12 @@ def generate_html(data, analysis):
         penalty_content=data.get('penalty_content', '—'),
         authority=data.get('authority', '—'),
         decision_date=data.get('decision_date', '—'),
-        publicity_period=data.get('publicity_period', '五年'),
+        publicity_period=data.get('publicity_period', '—'),
         remarks=data.get('remarks', '—'),
         source_url=data.get('source_url', ''),
         insights=analysis['insights'],
-        recommendations=analysis['recommendations']
+        recommendations=analysis['recommendations'],
+        source_tag=source_tag
     )
 
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -346,20 +367,27 @@ def main():
             'penalty_content': '—',
             'authority': '—',
             'decision_date': '—',
-            'publicity_period': '五年',
-            'remarks': '爬取失败',
+            'publicity_period': '—',
+            'remarks': '—',
             'source_url': ''
         }
 
     print("\n抓取结果：")
     print("   当事人：" + data.get('party_name', '—'))
     print("   文号：" + data.get('doc_number', '—'))
+    print("   违法行为：" + data.get('violation_type', '—'))
+    print("   处罚内容：" + data.get('penalty_content', '—'))
+    print("   公示期限：" + data.get('publicity_period', '—'))
 
     print("\n>>> 步骤2：Kimi AI 分析")
-    analysis = analyze_with_kimi(data)
+    analysis, is_ai = analyze_with_kimi(data)
+    if is_ai:
+        print("   [✓] 分析来源：Kimi AI 实时生成")
+    else:
+        print("   [!] 分析来源：默认模板")
 
     print("\n>>> 步骤3：生成HTML报告")
-    generate_html(data, analysis)
+    generate_html(data, analysis, is_ai)
 
     print("\n" + "=" * 60)
     print("完成！")
