@@ -20,7 +20,6 @@ KIMI_MODEL = "kimi-k2-turbo"  # 轻量模型，响应更快
 
 def fetch_latest_penalty():
     from playwright.sync_api import sync_playwright
-    from playwright_stealth import stealth_sync
 
     url = "https://www.pbc.gov.cn/zhengwugongkai/4081330/4081344/4081407/4081705/index.html"
 
@@ -33,7 +32,13 @@ def fetch_latest_penalty():
             timezone_id='Asia/Shanghai'
         )
         page = context.new_page()
-        stealth_sync(page)
+        # 注入反检测脚本（替代 playwright-stealth）
+        page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+        """)
 
         print(f"[1/3] 访问：{url}")
         page.goto(url, wait_until="networkidle", timeout=30000)
@@ -74,6 +79,13 @@ def fetch_latest_penalty():
         print(f"       详情页：{href}")
 
         detail_page = context.new_page()
+                detail_page = context.new_page()
+        detail_page.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+        """)
         stealth_sync(detail_page)
         detail_page.goto(href, wait_until="networkidle", timeout=30000)
         detail_page.wait_for_timeout(3000)
