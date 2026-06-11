@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-央行行政处罚监测日报生成器 - 网络重试版
-修复：GitHub Actions 国外服务器访问国内网站超时问题
+央行行政处罚监测日报生成器 - API增强版
+修复：GitHub Actions国外服务器调用Kimi API超时问题
 """
 
 import os
@@ -17,6 +17,9 @@ from openai import OpenAI
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 KIMI_MODEL = "kimi-k2-turbo"
+API_TIMEOUT = 120  # 120秒超时
+API_RETRIES = 5    # 重试5次
+API_RETRY_DELAY = 10  # 每次重试间隔10秒
 
 
 def fetch_latest_penalty():
@@ -24,7 +27,7 @@ def fetch_latest_penalty():
 
     url = "https://www.pbc.gov.cn/zhengwugongkai/4081330/4081344/4081407/4081705/index.html"
     max_retries = 3
-    timeout_ms = 60000  # 60秒超时
+    timeout_ms = 60000
 
     for attempt in range(1, max_retries + 1):
         print("[尝试 " + str(attempt) + "/" + str(max_retries) + "] 访问列表页：" + url)
@@ -47,11 +50,9 @@ def fetch_latest_penalty():
                     Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
                 """)
 
-                # 用 domcontentloaded 而不是 networkidle，避免国外服务器卡死
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-                page.wait_for_timeout(8000)  # 等8秒让JS加载
+                page.wait_for_timeout(8000)
 
-                # 找第一个含"银罚决字"的链接
                 link = None
                 for sel in ["a[href*='银罚决字']", "a[title*='银罚决字']", "ul li a", ".TRS_Editor a", "table a"]:
                     try:
@@ -113,9 +114,6 @@ def fetch_latest_penalty():
 
 
 def extract_table_data(page):
-    """
-    直接提取央行详情页标准化表格，按表头精确匹配。
-    """
     data = {
         'party_name': '',
         'doc_number': '',
@@ -182,11 +180,15 @@ def extract_table_data(page):
 
 
 def analyze_with_kimi(data):
-    if not KIMI_API_KEY:
-        print("未设置 KIMI_API_KEY，使用默认数据")
+    # 调试：检查API Key是否读取成功（只打印前8位）
+    if KIMI_API_KEY:
+        print("   API Key已读取：" + KIMI_API_KEY[:8] + "...")
+    else:
+        print("   [错误] 未读取到 KIMI_API_KEY 环境变量")
+        print("   请检查 GitHub Secrets 是否设置：Settings -> Secrets -> KIMI_API_KEY")
         return get_default_data(), False
 
-    client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL, timeout=60)
+    client = OpenAI(api_key=KIMI_API_KEY, base_url=KIMI_BASE_URL, timeout=API_TIMEOUT)
 
     prompt = "你是一名专业的金融法律合规专家，精通汽车金融公司监管要求。\n\n"
     prompt += "请基于以下中国人民银行行政处罚信息，输出两部分内容：\n\n"
@@ -208,12 +210,12 @@ def analyze_with_kimi(data):
     prompt += "建议1|标题|内容...\n"
     prompt += "建议2|标题|内容...\n"
 
-    print("\n[AI分析] 调用 Kimi API...")
-    max_retries = 3
+    print("\n[AI分析] 调用 Kimi API (模型: " + KIMI_MODEL + ")...")
+    print("   超时设置：" + str(API_TIMEOUT) + "秒，重试次数：" + str(API_RETRIES))
 
-    for attempt in range(1, max_retries + 1):
+    for attempt in range(1, API_RETRIES + 1):
         try:
-            print("   尝试 " + str(attempt) + "/" + str(max_retries) + "...")
+            print("   尝试 " + str(attempt) + "/" + str(API_RETRIES) + "...")
             resp = client.chat.completions.create(
                 model=KIMI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
@@ -224,8 +226,9 @@ def analyze_with_kimi(data):
             return parse_ai_response(resp.choices[0].message.content), True
         except Exception as e:
             print("   失败：" + str(e))
-            if attempt < max_retries:
-                time.sleep(3)
+            if attempt < API_RETRIES:
+                print("   等待" + str(API_RETRY_DELAY) + "秒后重试...")
+                time.sleep(API_RETRY_DELAY)
             else:
                 print("   已用尽重试次数，使用默认数据")
                 break
