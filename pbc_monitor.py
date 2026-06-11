@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-央行行政处罚监测日报生成器 - 精准表格提取版
+央行行政处罚监测日报生成器 - 网络重试版
+修复：GitHub Actions 国外服务器访问国内网站超时问题
 """
 
 import os
@@ -22,78 +23,98 @@ def fetch_latest_penalty():
     from playwright.sync_api import sync_playwright
 
     url = "https://www.pbc.gov.cn/zhengwugongkai/4081330/4081344/4081407/4081705/index.html"
+    max_retries = 3
+    timeout_ms = 60000  # 60秒超时
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            viewport={'width': 1920, 'height': 1080},
-            locale='zh-CN',
-            timezone_id='Asia/Shanghai'
-        )
+    for attempt in range(1, max_retries + 1):
+        print("[尝试 " + str(attempt) + "/" + str(max_retries) + "] 访问列表页：" + url)
 
-        page = context.new_page()
-        page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {} };
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
-        """)
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(
+                    user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='zh-CN',
+                    timezone_id='Asia/Shanghai'
+                )
 
-        print("[1/3] 访问列表页：" + url)
-        page.goto(url, wait_until="networkidle", timeout=30000)
-        page.wait_for_timeout(5000)
+                page = context.new_page()
+                page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    window.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+                """)
 
-        # 找第一个含"银罚决字"的链接
-        link = None
-        for sel in ["a[href*='银罚决字']", "a[title*='银罚决字']", "ul li a", ".TRS_Editor a", "table a"]:
-            try:
-                link = page.query_selector(sel)
-                if link and '银罚决字' in (link.inner_text() or ''):
-                    break
-            except:
-                continue
+                # 用 domcontentloaded 而不是 networkidle，避免国外服务器卡死
+                page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                page.wait_for_timeout(8000)  # 等8秒让JS加载
 
-        if not link:
-            print("未找到处罚链接")
-            browser.close()
-            return None
+                # 找第一个含"银罚决字"的链接
+                link = None
+                for sel in ["a[href*='银罚决字']", "a[title*='银罚决字']", "ul li a", ".TRS_Editor a", "table a"]:
+                    try:
+                        link = page.query_selector(sel)
+                        if link and '银罚决字' in (link.inner_text() or ''):
+                            break
+                    except:
+                        continue
 
-        title = link.inner_text().strip()
-        href = link.get_attribute("href")
+                if not link:
+                    print("   未找到处罚链接")
+                    browser.close()
+                    if attempt < max_retries:
+                        print("   等待5秒后重试...")
+                        time.sleep(5)
+                        continue
+                    return None
 
-        if href.startswith('/'):
-            href = "https://www.pbc.gov.cn" + href
-        elif not href.startswith('http'):
-            base = "https://www.pbc.gov.cn/zhengwugongkai/4081330/4081344/4081407/4081705/"
-            href = base + href
+                title = link.inner_text().strip()
+                href = link.get_attribute("href")
 
-        print("[2/3] 找到：" + title)
-        print("       详情页：" + href)
+                if href.startswith('/'):
+                    href = "https://www.pbc.gov.cn" + href
+                elif not href.startswith('http'):
+                    base = "https://www.pbc.gov.cn/zhengwugongkai/4081330/4081344/4081407/4081705/"
+                    href = base + href
 
-        detail_page = context.new_page()
-        detail_page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            window.chrome = { runtime: {} };
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
-        """)
-        detail_page.goto(href, wait_until="networkidle", timeout=30000)
-        detail_page.wait_for_timeout(3000)
+                print("[2/3] 找到：" + title)
+                print("       详情页：" + href)
 
-        print("[3/3] 提取表格数据...")
-        data = extract_table_data(detail_page)
-        data['source_url'] = href
-        data['list_title'] = title
+                detail_page = context.new_page()
+                detail_page.add_init_script("""
+                    Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                    window.chrome = { runtime: {} };
+                    Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
+                    Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
+                """)
+                detail_page.goto(href, wait_until="domcontentloaded", timeout=timeout_ms)
+                detail_page.wait_for_timeout(5000)
 
-        browser.close()
-        return data
+                print("[3/3] 提取表格数据...")
+                data = extract_table_data(detail_page)
+                data['source_url'] = href
+                data['list_title'] = title
+
+                browser.close()
+                return data
+
+        except Exception as e:
+            print("   错误：" + str(e))
+            if attempt < max_retries:
+                print("   等待5秒后重试...")
+                time.sleep(5)
+            else:
+                print("   已用尽重试次数")
+                return None
+
+    return None
 
 
 def extract_table_data(page):
     """
     直接提取央行详情页标准化表格，按表头精确匹配。
-    表头：序号 | 当事人名称 | 行政处罚决定书文号 | 违法行为类型 | 行政处罚内容 | 作出行政处罚决定机关名称 | 作出行政处罚决定日期 | 公示期限 | 备注
     """
     data = {
         'party_name': '',
@@ -106,7 +127,6 @@ def extract_table_data(page):
         'remarks': ''
     }
 
-    # 表头到字段的映射
     header_map = {
         '当事人名称': 'party_name',
         '行政处罚决定书文号': 'doc_number',
@@ -119,32 +139,26 @@ def extract_table_data(page):
     }
 
     try:
-        # 先尝试找 thead + tbody 结构
         tables = page.query_selector_all("table")
 
         for table in tables:
-            # 获取所有行
             rows = table.query_selector_all("tr")
             if len(rows) < 2:
                 continue
 
-            # 第一行是表头
             headers = []
             header_cells = rows[0].query_selector_all("th, td")
             for cell in header_cells:
                 text = cell.inner_text().strip().replace('\n', '').replace(' ', '')
                 headers.append(text)
 
-            # 检查是否匹配目标表格（必须有"当事人名称"）
             if not any('当事人名称' in h for h in headers):
                 continue
 
             print("   发现目标表格，表头：" + " | ".join(headers))
 
-            # 取第二行（数据行，跳过序号列）
             if len(rows) >= 2:
                 data_cells = rows[1].query_selector_all("td")
-                # 如果第一列是序号，数据从第二列开始
                 start_idx = 1 if len(data_cells) > len(headers) else 0
 
                 for i, header in enumerate(headers):
@@ -155,12 +169,11 @@ def extract_table_data(page):
                                 value = data_cells[cell_idx].inner_text().strip()
                                 data[field_name] = value
                                 break
-            break  # 只处理第一个匹配表格
+            break
 
     except Exception as e:
         print("表格提取异常：" + str(e))
 
-    # 打印提取结果供调试
     print("   提取结果：")
     for k, v in data.items():
         print("      " + k + " = " + (v if v else "(空)"))
