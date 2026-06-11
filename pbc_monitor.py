@@ -13,10 +13,11 @@ from datetime import datetime
 from jinja2 import Template
 from openai import OpenAI
 
-# 配置
+# ========== 配置 ==========
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
-KIMI_MODEL = "kimi-k2-turbo"  # 轻量模型，响应更快
+KIMI_MODEL = "kimi-k2-turbo"
+
 
 def fetch_latest_penalty():
     from playwright.sync_api import sync_playwright
@@ -31,8 +32,9 @@ def fetch_latest_penalty():
             locale='zh-CN',
             timezone_id='Asia/Shanghai'
         )
+
         page = context.new_page()
-        # 注入反检测脚本（替代 playwright-stealth）
+        # 注入反检测脚本
         page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             window.chrome = { runtime: {} };
@@ -79,14 +81,12 @@ def fetch_latest_penalty():
         print(f"       详情页：{href}")
 
         detail_page = context.new_page()
-                detail_page = context.new_page()
         detail_page.add_init_script("""
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             window.chrome = { runtime: {} };
             Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
             Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] });
         """)
-        stealth_sync(detail_page)
         detail_page.goto(href, wait_until="networkidle", timeout=30000)
         detail_page.wait_for_timeout(3000)
 
@@ -100,11 +100,17 @@ def fetch_latest_penalty():
         browser.close()
         return data
 
+
 def extract_structured_data(page, raw_text):
     data = {
-        'party_name': '', 'doc_number': '', 'violation_type': '',
-        'penalty_content': '', 'authority': '', 'decision_date': '',
-        'publicity_period': '五年', 'remarks': ''
+        'party_name': '',
+        'doc_number': '',
+        'violation_type': '',
+        'penalty_content': '',
+        'authority': '',
+        'decision_date': '',
+        'publicity_period': '五年',
+        'remarks': ''
     }
 
     try:
@@ -130,18 +136,23 @@ def extract_structured_data(page, raw_text):
         pass
 
     if not data['party_name']:
-        m = re.search(r'([^\n]{2,30}?(?:公司|银行|集团|中心|协会))', raw_text)
-        if m: data['party_name'] = m.group(1).strip()
+        m = re.search(r'([^
+]{2,30}?(?:公司|银行|集团|中心|协会))', raw_text)
+        if m:
+            data['party_name'] = m.group(1).strip()
 
     if not data['doc_number']:
         m = re.search(r'(银罚决字[〔\[]?\d{4}[〕\]]?\d+号)', raw_text)
-        if m: data['doc_number'] = m.group(1)
+        if m:
+            data['doc_number'] = m.group(1)
 
     if not data['decision_date']:
         m = re.search(r'(\d{4}年\d{1,2}月\d{1,2}日)', raw_text)
-        if m: data['decision_date'] = m.group(1)
+        if m:
+            data['decision_date'] = m.group(1)
 
     return data
+
 
 def analyze_with_kimi(data):
     if not KIMI_API_KEY:
@@ -176,7 +187,8 @@ def analyze_with_kimi(data):
 建议2|标题|内容...
 """
 
-    print("\n[AI分析] 调用 Kimi API...")
+    print("
+[AI分析] 调用 Kimi API...")
     max_retries = 3
 
     for attempt in range(1, max_retries + 1):
@@ -188,10 +200,10 @@ def analyze_with_kimi(data):
                 temperature=0.3,
                 max_tokens=2000,
             )
-            print("   ✅ 成功")
+            print("   成功")
             return parse_ai_response(resp.choices[0].message.content)
         except Exception as e:
-            print(f"   ❌ 失败：{e}")
+            print(f"   失败：{e}")
             if attempt < max_retries:
                 time.sleep(3)
             else:
@@ -199,6 +211,7 @@ def analyze_with_kimi(data):
                 break
 
     return get_default_data()
+
 
 def get_default_data():
     return {
@@ -215,9 +228,12 @@ def get_default_data():
         ]
     }
 
+
 def parse_ai_response(text):
-    insights, recommendations = [], []
-    for line in text.strip().split('\n'):
+    insights = []
+    recommendations = []
+    for line in text.strip().split('
+'):
         line = line.strip()
         if line.startswith('洞见') and '|' in line:
             insights.append(line.split('|', 1)[1])
@@ -225,9 +241,12 @@ def parse_ai_response(text):
             parts = line.split('|')
             if len(parts) >= 3:
                 recommendations.append((parts[1], parts[2]))
-    if not insights: insights = [text[:200]]
-    if not recommendations: recommendations = [('建议', text[:300])]
+    if not insights:
+        insights = [text[:200]]
+    if not recommendations:
+        recommendations = [('建议', text[:300])]
     return {'insights': insights, 'recommendations': recommendations}
+
 
 def generate_html(data, analysis):
     output_path = "index.html"
@@ -314,34 +333,51 @@ def generate_html(data, analysis):
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(html)
 
-    print(f"\n✅ 已生成：{output_path}")
+    print(f"
+已生成：{output_path}")
+
 
 def main():
     print("=" * 60)
     print("央行行政处罚监测日报生成器")
     print("=" * 60)
 
-    print("\n>>> 步骤1：爬取央行处罚公示页面")
+    print("
+>>> 步骤1：爬取央行处罚公示页面")
     data = fetch_latest_penalty()
     if not data:
-        print("\n❌ 爬取失败，生成默认页面")
-        data = {'party_name': '—', 'doc_number': '—', 'violation_type': '—',
-                'penalty_content': '—', 'authority': '—', 'decision_date': '—',
-                'publicity_period': '五年', 'remarks': '爬取失败', 'source_url': ''}
+        print("
+爬取失败，生成默认页面")
+        data = {
+            'party_name': '—',
+            'doc_number': '—',
+            'violation_type': '—',
+            'penalty_content': '—',
+            'authority': '—',
+            'decision_date': '—',
+            'publicity_period': '五年',
+            'remarks': '爬取失败',
+            'source_url': ''
+        }
 
-    print(f"\n📋 抓取结果：")
+    print(f"
+抓取结果：")
     print(f"   当事人：{data.get('party_name', '—')}")
     print(f"   文号：{data.get('doc_number', '—')}")
 
-    print("\n>>> 步骤2：Kimi AI 分析")
+    print("
+>>> 步骤2：Kimi AI 分析")
     analysis = analyze_with_kimi(data)
 
-    print("\n>>> 步骤3：生成HTML报告")
+    print("
+>>> 步骤3：生成HTML报告")
     generate_html(data, analysis)
 
-    print("\n" + "=" * 60)
+    print("
+" + "=" * 60)
     print("完成！")
     print("=" * 60)
+
 
 if __name__ == "__main__":
     main()
