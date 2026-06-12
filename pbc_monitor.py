@@ -15,7 +15,7 @@ from openai import OpenAI
 
 # ========== 配置 ==========
 KIMI_API_KEY = os.getenv("KIMI_API_KEY", "")
-KIMI_BASE_URL = "https://api.moonshot.ai/v1"
+KIMI_BASE_URL = "https://api.moonshot.cn/v1"
 KIMI_MODEL = "kimi-k2-turbo"
 API_TIMEOUT = 120  # 120秒超时
 API_RETRIES = 5    # 重试5次
@@ -219,7 +219,7 @@ def analyze_with_kimi(data):
             resp = client.chat.completions.create(
                 model=KIMI_MODEL,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
+                temperature=1,
                 max_tokens=2000,
             )
             print("   成功")
